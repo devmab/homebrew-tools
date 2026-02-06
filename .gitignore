@@ -1,0 +1,9 @@
+### Diff template
+*.patch
+*.diff
+
+### GPG template
+secring.*
+
+### Ignore all Jetbrains IDE files
+.idea/
