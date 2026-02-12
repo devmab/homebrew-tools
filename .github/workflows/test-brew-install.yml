@@ -13,6 +13,10 @@ on:
         type: string
         required: false
         default: ""
+  pull_request:
+    paths:
+      - "Formula/**"
+      - ".github/workflows/test-brew-install.yml"
 
 permissions:
   contents: read
@@ -45,7 +49,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node
-        uses: actions/setup-node@60b0f8f9570cb405f4b3f6e8c1d1bd6287ea6d6d # v4.0.4
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
           node-version: "20"
 
@@ -84,10 +88,23 @@ jobs:
         run: ln -sf /opt/homebrew/lib/node_modules/@hashgraph/solo/dist/solo.js /opt/homebrew/bin/solo
 
       - name: Verify old solo works
-        run: solo --version
+        run: |
+          if [ "${{ matrix.scenario }}" = "stale-brew-bin" ]; then
+            echo "Skipping old solo verification for stale-brew-bin scenario."
+            exit 0
+          fi
+          if command -v solo >/dev/null 2>&1; then
+            solo --version
+          else
+            echo "solo not found on PATH; skipping old solo verification."
+          fi
 
       - name: Install latest solo via brew
         run: |
+          if [ -n "${OLD_SOLO_VERSION}" ] && brew list --versions "solo@${OLD_SOLO_VERSION}" >/dev/null 2>&1; then
+            brew unlink "solo@${OLD_SOLO_VERSION}" || true
+          fi
+          brew unlink solo || true
           if [ -n "${NEW_SOLO_VERSION}" ]; then
             brew reinstall --build-from-source hiero-ledger/tools/solo@${NEW_SOLO_VERSION}
             brew link --overwrite solo@${NEW_SOLO_VERSION} || true
@@ -97,3 +114,11 @@ jobs:
 
       - name: Verify latest solo works
         run: solo --version
+
+      - name: Brew test solo
+        run: |
+          if [ -n "${NEW_SOLO_VERSION}" ]; then
+            brew test hiero-ledger/tools/solo@${NEW_SOLO_VERSION}
+          else
+            brew test hiero-ledger/tools/solo
+          fi

@@ -10,9 +10,6 @@ class Solo < Formula
 
   def install
     # Step 0: Validate environment prerequisites before modifying the system.
-    if OS.windows?
-      odie "Homebrew formulae are not supported on Windows. Use npm or a Windows package manager instead."
-    end
     odie "npm was not found in PATH; install Node.js first." if which("npm").nil?
 
     # Step 1: Remove any non-Homebrew solo binary/symlink to avoid link conflicts.
@@ -74,6 +71,7 @@ class Solo < Formula
     npm_packages.each do |pkg|
       pkg_scope, pkg_name = pkg.split("/")
       pkg_path = File.join(npm_root, pkg_scope, pkg_name)
+      brew_pkg_path = File.join(brew_prefix_root, pkg_scope, pkg_name)
       if !npm_root.empty? && File.exist?(pkg_path)
         opoo <<~EOS
           ATTENTION: Detected a global npm install for #{pkg}.
@@ -132,6 +130,6 @@ class Solo < Formula
   end
 
   test do
-    assert_match "Usage: solo", shell_output("#{bin}/solo --help")
+    assert_match(/^Usage:\s+solo\b/m, shell_output("#{bin}/solo --help"))
   end
 end
