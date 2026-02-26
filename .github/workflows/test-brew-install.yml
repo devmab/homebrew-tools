@@ -29,11 +29,13 @@ jobs:
       matrix:
         os:
           - macos-latest
+          - ubuntu-latest
         scenario:
-          - npm
-          - brew
-          - npm-link
-          - stale-brew-bin
+          - npm # preinstall via npm to test uninstall flow
+          - brew # preinstall via brew to test unlink/upgrade flow
+          - npm-link # create npm link to test unlink flow
+          - stale-brew-bin # create stale /bin/solo symlink to test cleanup
+          - npm-permission # simulate npm permission errors to test guidance
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -53,6 +55,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Setup Homebrew
+        uses: Homebrew/actions/setup-homebrew@9ceb7934560eb61d131dde205a6c2d77b2e1529d # master
+
       - name: Tap Local Formula
         run: brew tap --custom-remote hiero-ledger/tools "$GITHUB_WORKSPACE"
 
@@ -64,6 +69,22 @@ jobs:
           else
             npm install -g @hashgraph/solo
           fi
+
+      - name: Prepare npm permission failure
+        if: matrix.scenario == 'npm-permission'
+        run: |
+          brew_prefix="$(brew --prefix)"
+          npm_root="${brew_prefix}/lib/node_modules"
+          sudo mkdir -p "${npm_root}/@hashgraph/solo" "${npm_root}/@hiero-ledger/solo"
+          printf '{"name":"@hashgraph/solo","version":"0.0.0"}' | sudo tee "${npm_root}/@hashgraph/solo/package.json" >/dev/null
+          printf '{"name":"@hiero-ledger/solo","version":"0.0.0"}' | sudo tee "${npm_root}/@hiero-ledger/solo/package.json" >/dev/null
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            chown_group="wheel"
+          else
+            chown_group="root"
+          fi
+          sudo chown -R root:"${chown_group}" "${npm_root}/@hashgraph" "${npm_root}/@hiero-ledger"
+          sudo chmod -R 555 "${npm_root}/@hashgraph" "${npm_root}/@hiero-ledger"
 
       - name: Install old solo via brew
         if: matrix.scenario == 'brew'
@@ -83,9 +104,29 @@ jobs:
           mkdir -p "${npm_root}/@hashgraph"
           ln -sf "$GITHUB_WORKSPACE" "${npm_root}/@hashgraph/solo"
 
+      - name: Normalize brew/npm permissions for npm scenarios
+        if: matrix.scenario == 'npm' || matrix.scenario == 'npm-link'
+        run: |
+          brew_prefix="$(brew --prefix)"
+          if ! brew list --versions node >/dev/null 2>&1; then
+            brew install node
+          fi
+          npm_root="${brew_prefix}/lib/node_modules"
+          sudo mkdir -p "${npm_root}/@hashgraph" "${npm_root}/@hiero-ledger"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            sudo chflags -R nouchg "${npm_root}" 2>/dev/null || true
+          fi
+          sudo chown -R "$USER":"$(id -gn)" "${npm_root}" 2>/dev/null || true
+          sudo chmod -R u+rwX "${npm_root}" 2>/dev/null || true
+          if [ -e "${brew_prefix}/bin/solo" ]; then
+            sudo rm -f "${brew_prefix}/bin/solo" 2>/dev/null || true
+          fi
+
       - name: Create stale brew bin symlink
         if: matrix.scenario == 'stale-brew-bin'
-        run: ln -sf /opt/homebrew/lib/node_modules/@hashgraph/solo/dist/solo.js /opt/homebrew/bin/solo
+        run: |
+          brew_prefix="$(brew --prefix)"
+          ln -sf "${brew_prefix}/lib/node_modules/@hashgraph/solo/dist/solo.js" "${brew_prefix}/bin/solo"
 
       - name: Verify old solo works
         run: |
@@ -100,7 +141,13 @@ jobs:
           fi
 
       - name: Install latest solo via brew
+        if: matrix.scenario != 'npm-permission'
         run: |
+          if [ "${{ matrix.scenario }}" = "npm" ] || [ "${{ matrix.scenario }}" = "npm-link" ]; then
+            brew_prefix="$(brew --prefix)"
+            sudo chown -R "$USER":"$(id -gn)" "${brew_prefix}/lib/node_modules" 2>/dev/null || true
+            sudo chmod -R u+rwX "${brew_prefix}/lib/node_modules" 2>/dev/null || true
+          fi
           if [ -n "${OLD_SOLO_VERSION}" ] && brew list --versions "solo@${OLD_SOLO_VERSION}" >/dev/null 2>&1; then
             brew unlink "solo@${OLD_SOLO_VERSION}" || true
           fi
@@ -111,11 +158,35 @@ jobs:
           else
             brew reinstall --build-from-source hiero-ledger/tools/solo
           fi
+        continue-on-error: ${{ matrix.scenario == 'npm-permission' }}
 
       - name: Verify latest solo works
         run: solo --version
+        if: matrix.scenario != 'npm-permission'
+
+      - name: Verify npm permission error message
+        if: matrix.scenario == 'npm-permission'
+        run: |
+          if [ -n "${OLD_SOLO_VERSION}" ] && brew list --versions "solo@${OLD_SOLO_VERSION}" >/dev/null 2>&1; then
+            brew unlink "solo@${OLD_SOLO_VERSION}" || true
+          fi
+          brew unlink solo || true
+          brew reinstall --build-from-source hiero-ledger/tools/solo 2>&1 | tee brew-permission.log || true
+          if ! grep -Eq "permissions error|sudo chown -R|npm uninstall -g" brew-permission.log; then
+            echo "Expected permissions guidance not found in brew output."
+            exit 1
+          fi
+
+      - name: Restore npm permissions
+        if: matrix.scenario == 'npm-permission'
+        run: |
+          brew_prefix="$(brew --prefix)"
+          npm_root="${brew_prefix}/lib/node_modules"
+          sudo chown -R "$USER":"$(id -gn)" "${npm_root}/@hashgraph" "${npm_root}/@hiero-ledger"
+          sudo chmod -R u+rwX "${npm_root}/@hashgraph" "${npm_root}/@hiero-ledger"
 
       - name: Brew test solo
+        if: matrix.scenario != 'npm-permission'
         run: |
           if [ -n "${NEW_SOLO_VERSION}" ]; then
             brew test hiero-ledger/tools/solo@${NEW_SOLO_VERSION}
